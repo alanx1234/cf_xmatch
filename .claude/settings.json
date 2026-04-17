@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -c \"import pdfplumber; print\\('ok'\\)\")",
+      "Bash(python3 -c \"from dustmaps.bayestar import BayestarQuery; from dustmaps.edenhofer2023 import Edenhofer2023Query; print\\('dustmaps ok'\\)\")",
+      "Read(//opt/anaconda3/**)",
+      "Bash(python3 -c \"from dustmaps.config import config; print\\(config['data_dir']\\)\")",
+      "Bash(/opt/anaconda3/bin/python3 -c \"from dustmaps.config import config; print\\(config['data_dir']\\)\")",
+      "Bash(ls /opt/anaconda3/lib/python3.12/site-packages/dustmaps/data/edenhofer*)",
+      "Bash(/opt/anaconda3/bin/python3 -c ':*)"
+    ]
+  }
+}

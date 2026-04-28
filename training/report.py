@@ -6,7 +6,7 @@ import zuko
 
 from .constants import LOGA_GRID
 from .plots import (plot_loss, plot_residuals, plot_precision_grid,
-                    plot_posteriors, plot_prot_space)
+                    plot_accuracy_grid, plot_posteriors, plot_prot_space)
 
 
 def training_report(loss_curves: list[list[float]]) -> None:
@@ -32,6 +32,7 @@ def kfold_report(results_df: pd.DataFrame, x_col: str) -> None:
     plot_residuals(results_df, x_col=x_col)
     plot_residuals(results_df, x_col='inferred_age_gyr')
     plot_precision_grid(results_df, x_col=x_col)
+    plot_accuracy_grid(results_df, x_col=x_col)
 
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.hist(results_df['residual_dex'], bins=50,

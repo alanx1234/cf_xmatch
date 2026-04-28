@@ -1,5 +1,5 @@
+import numpy as np
 import pandas as pd
-import torch
 from typing import Callable
 from sklearn.preprocessing import StandardScaler
 import zuko
@@ -23,24 +23,24 @@ def run_kfold(df:            pd.DataFrame,
               err_lo_col:    str | None      = None,
               err_hi_col:    str | None      = None,
               ) -> tuple[pd.DataFrame, list[zuko.flows.NSF],
-                         list[StandardScaler], list[list[float]]]:
+                         list[StandardScaler], list[list[float]], np.ndarray]:
     """Orchestrates k-fold: split → train → infer → collect residuals.
 
     age_weights=True  : activates 1B inverse-uncertainty loss weighting.
     age_sample_fn     : pass sample_log_age for 1C stochastic age sampling.
     age_col/err_*_col : required when age_sample_fn is provided.
 
-    Returns (results_df, fold_flows, fold_scalers, loss_curves).
-    Posteriors are computed separately in notebooks via batch_posteriors
-    to keep orchestration out of this function.
+    Returns (results_df, fold_flows, fold_scalers, loss_curves, posteriors).
+    posteriors is shape (N, len(LOGA_GRID)), each star evaluated on its held-out fold.
     """
     n_cond = len(cond_cols)
     folds  = make_folds(df, n_folds=n_folds)
 
-    all_results  = []
-    fold_flows   = []
-    fold_scalers = []
-    loss_curves  = []
+    all_results     = []
+    all_posteriors  = []
+    fold_flows      = []
+    fold_scalers    = []
+    loss_curves     = []
 
     for fold_i, (train_df, val_df) in enumerate(folds):
         print(f'\n=== Fold {fold_i + 1} / {n_folds} ===')
@@ -78,9 +78,11 @@ def run_kfold(df:            pd.DataFrame,
         val_result['fold'] = fold_i
 
         all_results.append(val_result)
+        all_posteriors.append(posteriors)
         fold_flows.append(flow)
         fold_scalers.append(scaler)
         loss_curves.append(lc)
 
-    results_df = pd.concat(all_results, ignore_index=True)
-    return results_df, fold_flows, fold_scalers, loss_curves
+    results_df       = pd.concat(all_results, ignore_index=True)
+    posteriors_all   = np.vstack(all_posteriors)
+    return results_df, fold_flows, fold_scalers, loss_curves, posteriors_all

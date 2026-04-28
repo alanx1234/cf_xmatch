@@ -86,18 +86,56 @@ def plot_posteriors(posteriors: np.ndarray,
     axes = axes.flatten()
 
     for k, idx in enumerate(sorted_idx):
-        ax = axes[k]
+        ax   = axes[k]
+        row  = df.iloc[idx]
+        mass = row['mass_msun'] if 'mass_msun' in df.columns else None
         ax.plot(loga_grid, posteriors[idx], color='steelblue', lw=1.5)
-        ax.axvline(df['log_age_myr'].iloc[idx], color='deeppink',
+        ax.axvline(row['log_age_myr'], color='deeppink',
                    lw=1.5, ls='--', label='true age')
-        ax.set_xlabel('log age (Myr)')
-        ax.set_ylabel('p(age)')
-        ax.legend(fontsize=7)
+        title = f"{row['source_paper']}\n{10**row['log_age_myr']:.0f} Myr"
+        if mass is not None:
+            title += f"  |  {mass:.2f} M☉"
+        ax.set_title(title, fontsize=7)
+        ax.set_xlabel('log age (Myr)', fontsize=7)
+        ax.set_ylabel('p(age)', fontsize=7)
+        ax.legend(fontsize=6)
 
     for ax in axes[n_sample:]:
         ax.set_visible(False)
 
     plt.suptitle('Sample Age Posteriors', y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_accuracy_grid(df: pd.DataFrame, x_col: str) -> None:
+    """2D heatmap of median residual_dex binned by x_col and inferred age.
+
+    Equivalent to ChronoFlow figure 18. Shows where the model is systematically
+    biased — blue = underestimates age, red = overestimates age.
+    """
+    x_bins   = np.linspace(df[x_col].min(), df[x_col].max(), 11)
+    age_bins = np.linspace(df['p50'].min(), df['p50'].max(), 11)
+
+    grid = np.full((len(age_bins) - 1, len(x_bins) - 1), np.nan)
+    for i in range(len(age_bins) - 1):
+        for j in range(len(x_bins) - 1):
+            mask = (
+                (df['p50']  >= age_bins[i]) & (df['p50']  < age_bins[i + 1]) &
+                (df[x_col]  >= x_bins[j])   & (df[x_col]  < x_bins[j + 1])
+            )
+            if mask.sum() >= 3:
+                grid[i, j] = df.loc[mask, 'residual_dex'].median()
+
+    abs_max = np.nanmax(np.abs(grid))
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(grid, origin='lower', aspect='auto',
+                   extent=[x_bins[0], x_bins[-1], age_bins[0], age_bins[-1]],
+                   cmap='RdBu', vmin=-abs_max, vmax=abs_max)
+    plt.colorbar(im, ax=ax, label='Median residual (dex)')
+    ax.set_xlabel(x_col)
+    ax.set_ylabel('Inferred log age (Myr)')
+    ax.set_title('Accuracy Grid (median residual)')
     plt.tight_layout()
     plt.show()
 

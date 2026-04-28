@@ -4,7 +4,7 @@ from torch import Tensor
 from typing import Callable
 import zuko
 
-from .constants import W_F, PRIOR_LOGPROT
+from .constants import W_F, PRIOR_LOGPROT, PRIOR_LOGROSSBY
 from .data import make_tensors, sample_log_age
 
 
@@ -39,6 +39,7 @@ def train_fold(flow:           zuko.flows.NSF,
                err_hi_col:     str | None       = None,
                cond_cols:      list[str] | None = None,
                scaler:         object           = None,
+               prior_bounds:   tuple            = PRIOR_LOGPROT,
                print_every:    int              = 1000,
                ) -> list[float]:
     """Train flow on one fold. Returns loss curve.
@@ -48,9 +49,10 @@ def train_fold(flow:           zuko.flows.NSF,
     1C: pass age_sample_fn=sample_log_age plus age_df, age_col, err_lo_col,
         err_hi_col, cond_cols, scaler so sampling occurs before normalization
         each step.
+    Pass prior_bounds=PRIOR_LOGROSSBY for Rossby number models.
     """
     ln_p_out = np.log(
-        (1 - W_F) / (PRIOR_LOGPROT[1] - PRIOR_LOGPROT[0])
+        (1 - W_F) / (prior_bounds[1] - prior_bounds[0])
     )
 
     optimizer = torch.optim.Adam(flow.parameters(), lr=lr)

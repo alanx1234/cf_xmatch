@@ -20,11 +20,26 @@ def load_training(path: str, drop_nan_age_err: bool = False) -> pd.DataFrame:
     df['log_tau_ce_err']  = np.log10(df['tau_ce_err_days'])
     df['log_mass_err_lo'] = np.log10(df['mass_msun_err_lo'])
     df['log_mass_err_hi'] = np.log10(df['mass_msun_err_hi'])
+    df['log_rossby']      = df['log_prot'] - df['log_tau_ce']
 
     # Only defined for stars with age uncertainties
     has_age_err = df['age_err_lo_gyr'].notna() & df['age_err_hi_gyr'].notna()
     df.loc[has_age_err, 'log_age_err_lo'] = np.log10(df.loc[has_age_err, 'age_err_lo_gyr'] * 1000)
     df.loc[has_age_err, 'log_age_err_hi'] = np.log10(df.loc[has_age_err, 'age_err_hi_gyr'] * 1000)
+
+    # cluster_name: maps each star to its actual cluster for heatmap grouping.
+    # - 'multi': star_name holds the cluster name (Hyades, Pleiades, etc.)
+    # - 'Mamonova2025': spans 9 distinct clusters — split by age in Myr
+    # - field-star compilations: excluded (None) — not single-age populations
+    _field_sources = {'MOCADB', 'Engle2023', 'LWRD', 'Pass2022'}
+    age_myr = df['age_gyr'] * 1000
+    df['cluster_name'] = np.where(
+        df['source_paper'] == 'multi', df['star_name'],
+        np.where(df['source_paper'] == 'Mamonova2025',
+                 'Mamonova2025 (' + age_myr.round(1).astype(str) + ' Myr)',
+        np.where(df['source_paper'].isin(_field_sources), None,
+                 df['source_paper']))
+    )
 
     if drop_nan_age_err:
         df = df[has_age_err].reset_index(drop=True)
@@ -107,8 +122,11 @@ def sample_log_age(df: pd.DataFrame,
     err_lo_myr = df[err_lo_col] * 1000
     err_hi_myr = df[err_hi_col] * 1000
 
-    # Convert asymmetric uncertainties to log10(Myr) space
-    sigma_lo = np.log10(age_myr) - np.log10(age_myr - err_lo_myr)
+    # Convert asymmetric uncertainties to log10(Myr) space.
+    # Clip lower bound to 1 Myr to avoid log10 of zero/negative for stars
+    # whose err_lo is comparable to or larger than their age.
+    age_lo = np.maximum(age_myr - err_lo_myr, 1.0)
+    sigma_lo = np.log10(age_myr) - np.log10(age_lo)
     sigma_hi = np.log10(age_myr + err_hi_myr) - np.log10(age_myr)
 
     eps       = np.random.randn(len(df))

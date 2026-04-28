@@ -43,7 +43,9 @@ def kfold_report(results_df: pd.DataFrame, x_col: str) -> None:
                label=f'median = {med:.2f} dex')
     ax.set_xlabel('Residual (dex)')
     ax.set_ylabel('N')
-    ax.set_title('Residual Distribution')
+    ax.set_title('Residual Distribution  (p50 − true log age)\n'
+                 'ideal: centered at 0 with tight spread',
+                 fontsize=9)
     ax.legend()
     plt.tight_layout()
     plt.show()

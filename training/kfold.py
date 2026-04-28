@@ -7,6 +7,7 @@ import zuko
 from .flow import create_flow
 from .data import make_folds, make_tensors, make_age_weights, sample_log_age
 from .train import train_fold
+from .constants import PRIOR_LOGPROT
 from .infer import batch_posteriors
 from .metrics import compute_residuals
 from .constants import LOGA_GRID
@@ -22,6 +23,7 @@ def run_kfold(df:            pd.DataFrame,
               age_col:       str | None      = None,
               err_lo_col:    str | None      = None,
               err_hi_col:    str | None      = None,
+              prior_bounds:  tuple           = PRIOR_LOGPROT,
               ) -> tuple[pd.DataFrame, list[zuko.flows.NSF],
                          list[StandardScaler], list[list[float]], np.ndarray]:
     """Orchestrates k-fold: split → train → infer → collect residuals.
@@ -45,13 +47,9 @@ def run_kfold(df:            pd.DataFrame,
     for fold_i, (train_df, val_df) in enumerate(folds):
         print(f'\n=== Fold {fold_i + 1} / {n_folds} ===')
 
-        # 1C: sample log_age BEFORE normalization
-        if age_sample_fn is not None:
-            train_df_s = age_sample_fn(train_df, age_col, err_lo_col, err_hi_col)
-        else:
-            train_df_s = train_df
-
-        x_train, c_train, scaler = make_tensors(train_df_s, obs_col, cond_cols)
+        # Fit scaler on unperturbed train_df so normalization reference is stable.
+        # For 1C, age resampling happens inside train_fold each step using this scaler.
+        x_train, c_train, scaler = make_tensors(train_df, obs_col, cond_cols)
         x_val,   c_val,   _      = make_tensors(val_df,     obs_col, cond_cols, scaler)
 
         w_age = make_age_weights(train_df) if age_weights else None
@@ -70,6 +68,7 @@ def run_kfold(df:            pd.DataFrame,
             err_hi_col    = err_hi_col,
             cond_cols     = cond_cols,
             scaler        = scaler,
+            prior_bounds  = prior_bounds,
         )
 
         # Infer on val fold using this fold's model

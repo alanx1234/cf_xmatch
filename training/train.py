@@ -29,6 +29,7 @@ class _CombinedLRScheduler:
 def train_fold(flow:           zuko.flows.NSF,
                x:              Tensor,
                c:              Tensor,
+               obs_col:        str              = 'log_prot',
                steps:          int              = 5000,
                lr:             float            = 1e-3,
                age_weights:    Tensor | None    = None,
@@ -46,9 +47,13 @@ def train_fold(flow:           zuko.flows.NSF,
 
     1A: age_weights=None, age_sample_fn=None.
     1B: pass age_weights tensor (inverse age uncertainty, normalized).
+        age_weights are applied to ln_p_cond before W_F scaling and the
+        background mixture, matching the original ChronoFlow formulation.
     1C: pass age_sample_fn=sample_log_age plus age_df, age_col, err_lo_col,
         err_hi_col, cond_cols, scaler so sampling occurs before normalization
         each step.
+    obs_col is reused for 1C resampling so sampled-age models can target either
+    log_prot or a derived observable such as log_rossby.
     Pass prior_bounds=PRIOR_LOGROSSBY for Rossby number models.
     """
     ln_p_out = np.log(
@@ -70,7 +75,7 @@ def train_fold(flow:           zuko.flows.NSF,
         # 1C: resample log_age each step before normalization
         if age_sample_fn is not None:
             sampled_df    = age_sample_fn(age_df, age_col, err_lo_col, err_hi_col)
-            _, c, _       = make_tensors(sampled_df, 'log_prot', cond_cols, scaler)
+            _, c, _       = make_tensors(sampled_df, obs_col, cond_cols, scaler)
 
         ln_p_cond = flow(c).log_prob(x)
 

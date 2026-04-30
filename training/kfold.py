@@ -7,10 +7,9 @@ import zuko
 from .flow import create_flow
 from .data import make_folds, make_tensors, make_age_weights, sample_log_age
 from .train import train_fold
-from .constants import PRIOR_LOGPROT
 from .infer import batch_posteriors
 from .metrics import compute_residuals
-from .constants import LOGA_GRID
+from .constants import LOGA_GRID, PRIOR_LOGPROT
 
 
 def run_kfold(df:            pd.DataFrame,
@@ -59,6 +58,7 @@ def run_kfold(df:            pd.DataFrame,
             flow          = flow,
             x             = x_train,
             c             = c_train,
+            obs_col       = obs_col,
             steps         = steps,
             age_weights   = w_age,
             age_sample_fn = age_sample_fn,

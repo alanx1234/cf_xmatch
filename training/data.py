@@ -97,12 +97,11 @@ def make_age_weights(df: pd.DataFrame,
                      err_hi_col: str  = 'age_err_hi_gyr') -> Tensor:
     """Normalized inverse age uncertainty weights for 1B loss.
 
-    w_i = (1 / (err_lo_i + err_hi_i)) / mean(1 / (err_lo + err_hi))
-    Stars with tighter age constraints get higher weight. Normalized so
-    mean weight = 1, preserving effective learning rate.
+    Weights by 1/(err_lo + err_hi) in Gyr, which naturally upweights young
+    clusters whose absolute age errors are smallest. Normalized so mean weight = 1,
+    preserving effective learning rate.
     """
-    total_err = df[err_lo_col].values + df[err_hi_col].values
-    w = 1.0 / total_err
+    w = 1.0 / (df[err_lo_col].values + df[err_hi_col].values)
     w = w / w.mean()
     return torch.tensor(w.astype(np.float32))
 

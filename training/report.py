@@ -6,7 +6,8 @@ import zuko
 
 from .constants import LOGA_GRID
 from .plots import (plot_loss, plot_residuals, plot_precision_grid,
-                    plot_accuracy_grid, plot_posteriors, plot_prot_space)
+                    plot_accuracy_grid, plot_posteriors, plot_prot_space,
+                    plot_residual_panels, plot_cluster_residual_densities)
 
 
 def training_report(loss_curves: list[list[float]]) -> None:
@@ -22,33 +23,12 @@ def training_report(loss_curves: list[list[float]]) -> None:
     plt.show()
 
 
-def kfold_report(results_df: pd.DataFrame, x_col: str) -> None:
-    """Full diagnostic panel after k-fold:
-    1. Residuals vs x_col
-    2. Residuals vs inferred age
-    3. Precision grid (x_col vs inferred age)
-    4. Residual histogram with median marked.
-    """
-    plot_residuals(results_df, x_col=x_col)
-    plot_residuals(results_df, x_col='inferred_age_gyr')
-    plot_precision_grid(results_df, x_col=x_col)
-    plot_accuracy_grid(results_df, x_col=x_col)
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(results_df['residual_dex'], bins=50,
-            color='steelblue', alpha=0.8, edgecolor='none')
-    med = results_df['residual_dex'].median()
-    ax.axvline(0,   color='black',    lw=1.5)
-    ax.axvline(med, color='deeppink', lw=1.5, ls='--',
-               label=f'median = {med:.2f} dex')
-    ax.set_xlabel('Residual (dex)')
-    ax.set_ylabel('N')
-    ax.set_title('Residual Distribution  (p50 − true log age)\n'
-                 'ideal: centered at 0 with tight spread',
-                 fontsize=9)
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
+def kfold_report(results_df: pd.DataFrame) -> None:
+    """Residual panels, per-cluster density distributions, and precision/accuracy grids."""
+    plot_residual_panels(results_df)
+    plot_cluster_residual_densities(results_df)
+    plot_precision_grid(results_df, x_col='mass_msun')
+    plot_accuracy_grid(results_df, x_col='mass_msun')
 
 
 def posterior_report(posteriors: np.ndarray,

@@ -216,6 +216,181 @@ def plot_posteriors_by_age(posteriors: np.ndarray,
     plt.show()
 
 
+def set_paper_style() -> None:
+    """Apply paper-quality rcParams. STIXGeneral serif font; LaTeX rendering if available."""
+    import shutil
+    _has_latex = shutil.which('latex') is not None
+    plt.rcParams.update({
+        'text.usetex'                   : _has_latex,
+        'font.family'                   : 'serif',
+        'font.serif'                    : ['STIXGeneral', 'DejaVu Serif'],
+        'mathtext.fontset'              : 'cm',
+        'font.size'                     : 10,
+        'axes.labelsize'                : 10,
+        'xtick.labelsize'               : 8,
+        'ytick.labelsize'               : 8,
+        'legend.fontsize'               : 8,
+        'figure.dpi'                    : 300,
+        'xtick.direction'               : 'in',
+        'ytick.direction'               : 'in',
+        'xtick.minor.visible'           : True,
+        'ytick.minor.visible'           : True,
+        'xtick.top'                     : False,
+        'ytick.right'                   : False,
+        'axes.spines.top'               : False,
+        'axes.spines.right'             : False,
+    })
+
+
+def _age_label(myr: float) -> str:
+    if myr >= 1000:
+        v = myr / 1000
+        return f'{v:.1f} Gyr'.replace('.0 ', ' ')
+    return f'{myr:.0f} Myr'
+
+
+def plot_residual_panels(df: pd.DataFrame) -> None:
+    """Three-panel residual figure matching ChronoFlow Figure 13.
+
+    All x-axes log-scaled with real-value tick labels:
+    top = age, middle = mass, bottom = P_rot.
+    Error bars span p16–p84; dashed line marks the median residual.
+    """
+    from matplotlib.ticker import NullLocator
+
+    set_paper_style()
+
+    _COL = '#4878CF'
+    _MED = '#E84C8B'
+
+    valid = df[['p16', 'p50', 'p84', 'residual_dex',
+                'log_age_myr', 'mass_msun', 'prot_days']].notna().all(axis=1)
+    d = df[valid].copy()
+
+    resid   = d['residual_dex'].values
+    yerr_lo = (d['p50'] - d['p16']).values
+    yerr_hi = (d['p84'] - d['p50']).values
+    med     = float(np.median(resid))
+
+    age_myr = 10 ** d['log_age_myr'].values
+    mass    = d['mass_msun'].values
+    prot    = d['prot_days'].values
+
+    fig, axes = plt.subplots(3, 1, figsize=(7, 9), layout='constrained')
+
+    _kw_err  = dict(fmt='none', color=_COL, alpha=0.15, lw=0.4, zorder=1)
+    _kw_scat = dict(s=1.5, color=_COL, alpha=0.35, linewidths=0, zorder=2)
+
+    for ax, xvals in zip(axes, [age_myr, mass, prot]):
+        ax.set_xscale('log')
+        ax.errorbar(xvals, resid, yerr=[yerr_lo, yerr_hi], **_kw_err)
+        ax.scatter(xvals, resid, **_kw_scat)
+        ax.axhline(0,   color='black', lw=0.8, zorder=3)
+        ax.axhline(med, color=_MED, lw=1.0, ls='--', zorder=3,
+                   label=f'median = {med:.2f} dex')
+        ax.set_ylabel('Residual (dex)')
+        ax.legend(loc='upper right', frameon=False)
+        ax.xaxis.set_minor_locator(NullLocator())
+
+    age_ticks = [t for t in [2, 10, 100, 1000, 10000]
+                 if age_myr.min() * 0.5 <= t <= age_myr.max() * 2.0]
+    axes[0].set_xticks(age_ticks)
+    axes[0].set_xticklabels([_age_label(t) for t in age_ticks])
+    axes[0].set_xlabel('Age')
+
+    mass_ticks = [t for t in [0.1, 0.2, 0.3, 0.5, 1.0]
+                  if mass.min() * 0.8 <= t <= mass.max() * 1.2]
+    axes[1].set_xticks(mass_ticks)
+    axes[1].set_xticklabels([str(t) for t in mass_ticks])
+    axes[1].set_xlabel(r'Mass ($M_\odot$)')
+
+    prot_ticks = [t for t in [0.1, 1, 10, 100]
+                  if prot.min() * 0.8 <= t <= prot.max() * 1.2]
+    axes[2].set_xticks(prot_ticks)
+    axes[2].set_xticklabels([str(t) for t in prot_ticks])
+    axes[2].set_xlabel(r'$P_\mathrm{rot}$ (d)')
+
+    fig.suptitle(r'Age Residuals  ($p_{50} - \log_{10}\,\tau_\mathrm{true}$)', y=1.01)
+    plt.show()
+
+
+def plot_cluster_residual_densities(df: pd.DataFrame, n_clusters: int = 9) -> None:
+    """KDE of age residuals for representative clusters spanning the age range.
+
+    Selects n_clusters evenly spaced in log(age), so old clusters get fair
+    representation alongside the many young ones in the training set.
+    """
+    from scipy.stats import gaussian_kde
+
+    set_paper_style()
+
+    # Exclude field compilations and Mamonova2025 (age-grouped blend, not a single cluster)
+    _EXCL  = {'MOCADB', 'Engle2023', 'LWRD', 'Pass2022', 'Mamonova2025'}
+    _COL   = '#4878CF'
+    _MED   = '#E84C8B'
+    _MIN_N = 10
+
+    cl = df[df['cluster_name'].notna() & ~df['source_paper'].isin(_EXCL)].copy()
+
+    meta = (
+        cl.groupby('cluster_name', sort=False)
+        .agg(age_myr=('age_gyr', lambda x: (x * 1000).median()),
+             n       =('age_gyr', 'count'))
+        .reset_index()
+        .query('n >= @_MIN_N')
+        .sort_values('age_myr')
+        .reset_index(drop=True)
+    )
+
+    # Divide log(age) into n_clusters equal bins; pick the largest cluster in each bin
+    log_ages  = np.log10(meta['age_myr'].values)
+    bin_edges = np.linspace(log_ages[0], log_ages[-1], n_clusters + 1)
+    indices   = []
+    for i, (lo, hi) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
+        in_bin = (log_ages >= lo) & (log_ages <= hi if i == n_clusters - 1 else log_ages < hi)
+        if in_bin.any():
+            indices.append(int(meta.index[in_bin][meta.loc[in_bin, 'n'].argmax()]))
+    selected = meta.loc[sorted(set(indices))].reset_index(drop=True)
+
+    ncols = 3
+    nrows = int(np.ceil(len(selected) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7, nrows * 2.8), layout='constrained')
+    axes = axes.flatten()
+
+    all_resids = cl['residual_dex'].dropna()
+    x_lo = float(all_resids.quantile(0.01)) - 0.3
+    x_hi = float(all_resids.quantile(0.99)) + 0.3
+    x_grid = np.linspace(x_lo, x_hi, 300)
+
+    for ax, (_, row) in zip(axes, selected.iterrows()):
+        resids = cl.loc[cl['cluster_name'] == row['cluster_name'],
+                        'residual_dex'].dropna().values
+        if len(resids) < 5:
+            ax.set_visible(False)
+            continue
+
+        kde = gaussian_kde(resids, bw_method='scott')
+        y   = kde(x_grid)
+        ax.plot(x_grid, y, color=_COL, lw=1.5)
+        ax.fill_between(x_grid, y, alpha=0.2, color=_COL)
+        ax.axvline(0,                        color='black', lw=0.8)
+        ax.axvline(float(np.median(resids)), color=_MED,   lw=1.0, ls='--')
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_xlabel('Residual (dex)')
+        ax.set_ylabel('Density')
+        ax.set_title(
+            f'{row["cluster_name"]}\n'
+            f'{_age_label(row["age_myr"])}  ($N={int(row["n"])}$)',
+            fontsize=8,
+        )
+
+    for ax in axes[len(selected):]:
+        ax.set_visible(False)
+
+    fig.suptitle(r'Per-cluster residual distributions  (youngest $\to$ oldest)', y=1.02)
+    plt.show()
+
+
 def plot_prot_space(flows:     list[zuko.flows.NSF],
                     df:        pd.DataFrame,
                     cond_cols: list[str],
@@ -235,11 +410,14 @@ def plot_prot_space(flows:     list[zuko.flows.NSF],
     feature_col     = cond_cols[feature_col_idx]
     cluster_col     = 'cluster_name' if 'cluster_name' in df.columns else 'source_paper'
 
-    counts        = df[cluster_col].dropna().value_counts()
+    _EXCL = {'MOCADB', 'Engle2023', 'LWRD', 'Pass2022', 'Mamonova2025'}
+    cl_df = df[df['cluster_name'].notna() & ~df['source_paper'].isin(_EXCL)] if 'source_paper' in df.columns else df
+
+    counts        = cl_df[cluster_col].dropna().value_counts()
     valid_clusters = counts[counts >= min_stars].index.tolist()
     meta = pd.DataFrame({
         'cluster' : valid_clusters,
-        'log_age' : [df.loc[df[cluster_col] == c, 'log_age_myr'].median() for c in valid_clusters],
+        'log_age' : [cl_df.loc[cl_df[cluster_col] == c, 'log_age_myr'].median() for c in valid_clusters],
         'n'       : [counts[c] for c in valid_clusters],
     }).sort_values('log_age').reset_index(drop=True)
 
@@ -265,8 +443,8 @@ def plot_prot_space(flows:     list[zuko.flows.NSF],
     for k, row in selected.iterrows():
         ax      = axes[k]
         cluster = row['cluster']
-        log_age = row['log_age']
-        cl_df   = df[df[cluster_col] == cluster]
+        log_age      = row['log_age']
+        cluster_data = cl_df[cl_df[cluster_col] == cluster]
 
         PP, FF = np.meshgrid(logP_grid, feature_grid, indexing='ij')
         c_grid = np.tile(c_median, (res * res, 1))
@@ -285,7 +463,7 @@ def plot_prot_space(flows:     list[zuko.flows.NSF],
                   extent=[feature_grid[0], feature_grid[-1],
                           PRIOR_LOGPROT[0], PRIOR_LOGPROT[1]],
                   cmap='bone', vmin=-3, vmax=2)
-        ax.scatter(cl_df[feature_col], np.log10(cl_df['prot_days']),
+        ax.scatter(cluster_data[feature_col], np.log10(cluster_data['prot_days']),
                    s=6, color='deeppink', alpha=0.7, zorder=2)
         ax.set_title(f'{cluster}\n{10**log_age:.0f} Myr  (N={row["n"]:.0f})', fontsize=8)
         ax.set_xlabel(feature_col, fontsize=7)

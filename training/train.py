@@ -83,7 +83,7 @@ def train_fold(flow:           zuko.flows.NSF,
         if age_weights is not None:
             ln_p_cond = age_weights * ln_p_cond
 
-        ln_p_flow = W_F * ln_p_cond
+        ln_p_flow = ln_p_cond + np.log(W_F)
         ln_p_bg   = torch.full_like(ln_p_flow, ln_p_out)
         loss      = -torch.stack([ln_p_flow, ln_p_bg], dim=0).logsumexp(dim=0).mean()
 

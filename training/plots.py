@@ -475,3 +475,204 @@ def plot_prot_space(flows:     list[zuko.flows.NSF],
     plt.suptitle('P(P_rot | age, feature) per cluster  —  youngest → oldest', y=1.01)
     plt.tight_layout()
     plt.show()
+
+
+def plot_praesepe_density(
+    flows:        list[zuko.flows.NSF],
+    df:           pd.DataFrame,
+    results_df:   pd.DataFrame,
+    cond_cols:    list[str],
+    scalers:      list[StandardScaler],
+    cluster_name: str = 'Praesepe',
+    res:          int = 80,
+) -> None:
+    """Section-7-style heatmap for a single cluster, scatter coloured by age residual.
+
+    Shows p(log_prot | tau_cluster, mass) as a 2D imshow (mass on x, log_prot on y),
+    averaged across fold models. Actual cluster stars overlaid as scatter coloured
+    by age residual (dex).
+    """
+    mask = results_df.get('cluster_name', pd.Series(dtype=str)) == cluster_name
+    sub  = results_df[mask].reset_index(drop=True)
+    if len(sub) == 0:
+        print(f'No {cluster_name} stars in results_df')
+        return
+
+    age_col_idx     = cond_cols.index('log_age_myr')
+    feature_col_idx = 1
+    feature_col     = cond_cols[feature_col_idx]  # mass_msun
+
+    log_age    = sub['log_age_myr'].median()
+    logP_grid  = np.linspace(PRIOR_LOGPROT[0], PRIOR_LOGPROT[1], res)
+    feat_grid  = np.linspace(df[feature_col].min(), df[feature_col].max(), res)
+    c_median   = df[cond_cols].median().values.astype(np.float32)
+
+    PP, FF     = np.meshgrid(logP_grid, feat_grid, indexing='ij')
+    c_grid     = np.tile(c_median, (res * res, 1))
+    c_grid[:, age_col_idx]     = log_age
+    c_grid[:, feature_col_idx] = FF.ravel()
+    x_grid     = torch.tensor(PP.ravel().astype(np.float32)).unsqueeze(1)
+
+    log_probs = np.zeros(res * res, dtype=np.float32)
+    for flow, scaler in zip(flows, scalers):
+        c_norm = scaler.transform(c_grid).astype(np.float32)
+        with torch.no_grad():
+            log_probs += flow(torch.tensor(c_norm)).log_prob(x_grid).numpy()
+    log_probs = (log_probs / len(flows)).reshape(res, res)
+
+    vlim = max(abs(sub['residual_dex'].min()), abs(sub['residual_dex'].max()))
+    res_norm = plt.Normalize(vmin=-vlim, vmax=vlim)
+    res_cmap = plt.cm.RdBu_r
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.imshow(log_probs, origin='lower', aspect='auto',
+              extent=[feat_grid[0], feat_grid[-1], PRIOR_LOGPROT[0], PRIOR_LOGPROT[1]],
+              cmap='bone', vmin=-3, vmax=2)
+    sc = ax.scatter(sub[feature_col], sub['log_prot'],
+                    c=sub['residual_dex'], cmap=res_cmap, norm=res_norm,
+                    s=20, zorder=2, edgecolors='none')
+    plt.colorbar(sc, ax=ax, label='residual (dex)')
+    ax.set_xlabel(feature_col)
+    ax.set_ylabel('$\\log_{10} P_\\mathrm{rot}$ (d)')
+    ax.set_title(f'{cluster_name}  —  {10**log_age:.0f} Myr  (N={len(sub)})')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_fixed_feature_heatmap(
+    flows:       list[zuko.flows.NSF],
+    df:          pd.DataFrame,
+    cond_cols:   list[str],
+    scalers:     list[StandardScaler],
+    feature_col: str,
+    feature_vals: list[float],
+    feature_label: str        = '',
+    loga_grid:   np.ndarray   = LOGA_GRID,
+    res:         int          = 80,
+    feature_tol: float        = 0.05,
+) -> None:
+    """2×2 grid of p(P_rot | age, feature=fixed) heatmaps, bone colormap.
+
+    General version of plot_fixed_mass_heatmap: works for any conditioning
+    feature (mass, log_tau_ce, etc.). Non-age, non-feature columns are set
+    to their median values from df.
+    """
+    age_col_idx     = cond_cols.index('log_age_myr')
+    feature_col_idx = cond_cols.index(feature_col)
+    prot_grid       = np.linspace(df['log_prot'].min() - 0.1,
+                                  df['log_prot'].max() + 0.1, res)
+    loga_g          = np.linspace(loga_grid[0], loga_grid[-1], res)
+    c_median        = df[cond_cols].median().values.astype(np.float32)
+
+    PP, AA  = np.meshgrid(prot_grid, loga_g, indexing='ij')
+    x_grid  = torch.tensor(PP.ravel().astype(np.float32)).unsqueeze(1)
+
+    label   = feature_label or feature_col
+    n_cols  = 2
+    n_rows  = int(np.ceil(len(feature_vals) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 6, n_rows * 4),
+                             sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    for ax, fval in zip(axes, feature_vals):
+        c_fixed = c_median.copy()
+        c_fixed[feature_col_idx] = fval
+
+        c_grid = np.tile(c_fixed, (res * res, 1))
+        c_grid[:, age_col_idx] = AA.ravel()
+
+        log_probs = np.zeros(res * res, dtype=np.float32)
+        for flow, scaler in zip(flows, scalers):
+            flow.eval()
+            c_norm = scaler.transform(c_grid).astype(np.float32)
+            with torch.no_grad():
+                log_probs += flow(torch.tensor(c_norm)).log_prob(x_grid).numpy()
+        log_probs = (log_probs / len(flows)).reshape(res, res)
+
+        ax.imshow(log_probs, origin='lower', aspect='auto',
+                  extent=[loga_g[0], loga_g[-1], prot_grid[0], prot_grid[-1]],
+                  cmap='bone', vmin=-3, vmax=2)
+
+        nearby = df[(df[feature_col] - fval).abs() < feature_tol]
+        ax.scatter(nearby['log_age_myr'], nearby['log_prot'],
+                   s=6, color='deeppink', alpha=0.7, zorder=2)
+
+        ax.set_title(f'${label} = {fval:.2f}$  (N nearby={len(nearby)})', fontsize=9)
+        ax.set_xlabel('$\\log_{10}$ Age (Myr)', fontsize=8)
+        ax.set_ylabel('$\\log_{10} P_\\mathrm{rot}$ (d)', fontsize=8)
+
+    for ax in axes[len(feature_vals):]:
+        ax.set_visible(False)
+
+    plt.suptitle(f'$p(P_\\mathrm{{rot}}\\,|\\,\\tau,\\,{label})$ at fixed {label}', y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_fixed_mass_heatmap(
+    flows:       list[zuko.flows.NSF],
+    df:          pd.DataFrame,
+    cond_cols:   list[str],
+    scalers:     list[StandardScaler],
+    masses:      list[float] = (0.2, 0.35, 0.5, 0.6),
+    loga_grid:   np.ndarray  = LOGA_GRID,
+    res:         int         = 80,
+    mass_tol:    float       = 0.05,
+) -> None:
+    """2×2 grid of p(P_rot | age, m) heatmaps at fixed masses.
+
+    Each panel: log_prot (y) vs log_age (x), bone colormap matching section 7.
+    Deeppink scatter shows training stars within mass_tol of each fixed mass.
+    """
+    age_col_idx = cond_cols.index('log_age_myr')
+    prot_grid   = np.linspace(df['log_prot'].min() - 0.1,
+                              df['log_prot'].max() + 0.1, res)
+    loga_g      = np.linspace(loga_grid[0], loga_grid[-1], res)
+    PP, AA      = np.meshgrid(prot_grid, loga_g, indexing='ij')
+    x_grid      = torch.tensor(PP.ravel().astype(np.float32)).unsqueeze(1)
+
+    err_lo = float(df['mass_msun_err_lo'].median()) if 'mass_msun_err_lo' in cond_cols else 0.0
+    err_hi = float(df['mass_msun_err_hi'].median()) if 'mass_msun_err_hi' in cond_cols else 0.0
+
+    n_cols = 2
+    n_rows = int(np.ceil(len(masses) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 6, n_rows * 4),
+                             sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    for ax, mass_fixed in zip(axes, masses):
+        c_fixed = np.zeros(len(cond_cols), dtype=np.float32)
+        for j, col in enumerate(cond_cols):
+            if col == 'mass_msun':         c_fixed[j] = mass_fixed
+            elif col == 'mass_msun_err_lo': c_fixed[j] = err_lo
+            elif col == 'mass_msun_err_hi': c_fixed[j] = err_hi
+
+        c_grid = np.tile(c_fixed, (res * res, 1))
+        c_grid[:, age_col_idx] = AA.ravel()
+
+        log_probs = np.zeros(res * res, dtype=np.float32)
+        for flow, scaler in zip(flows, scalers):
+            flow.eval()
+            c_norm = scaler.transform(c_grid).astype(np.float32)
+            with torch.no_grad():
+                log_probs += flow(torch.tensor(c_norm)).log_prob(x_grid).numpy()
+        log_probs = (log_probs / len(flows)).reshape(res, res)
+
+        ax.imshow(log_probs, origin='lower', aspect='auto',
+                  extent=[loga_g[0], loga_g[-1], prot_grid[0], prot_grid[-1]],
+                  cmap='bone', vmin=-3, vmax=2)
+
+        nearby = df[(df['mass_msun'] - mass_fixed).abs() < mass_tol]
+        ax.scatter(nearby['log_age_myr'], nearby['log_prot'],
+                   s=6, color='deeppink', alpha=0.7, zorder=2)
+
+        ax.set_title(f'$m = {mass_fixed:.2f}\\,M_\\odot$  (N nearby={len(nearby)})', fontsize=9)
+        ax.set_xlabel('$\\log_{10}$ Age (Myr)', fontsize=8)
+        ax.set_ylabel('$\\log_{10} P_\\mathrm{rot}$ (d)', fontsize=8)
+
+    for ax in axes[len(masses):]:
+        ax.set_visible(False)
+
+    plt.suptitle('$p(P_\\mathrm{rot}\\,|\\,\\tau,\\,m)$ at fixed masses', y=1.01)
+    plt.tight_layout()
+    plt.show()

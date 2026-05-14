@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from torch import Tensor
 
@@ -45,6 +45,52 @@ def load_training(path: str, drop_nan_age_err: bool = False) -> pd.DataFrame:
         df = df[has_age_err].reset_index(drop=True)
 
     return df
+
+
+def make_holdout_split(df: pd.DataFrame,
+                       test_frac: float = 0.10,
+                       ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carve out a stratified test holdout using the same 27-strata scheme as make_folds.
+
+    Returns (train_val_df, test_df). test_df is fixed and never touched during training.
+    Stratification on age × mass × prot ensures balanced coverage across young,
+    middle-aged, and old stars in the test set.
+    """
+    age_bin  = pd.qcut(df['log_age_myr'],   q=3, labels=False, duplicates='drop')
+    mass_bin = pd.qcut(df['log_mass_msun'], q=3, labels=False, duplicates='drop')
+    prot_bin = pd.qcut(df['log_prot'],      q=3, labels=False, duplicates='drop')
+    stratum  = age_bin.astype(str) + mass_bin.astype(str) + prot_bin.astype(str)
+
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=test_frac, random_state=42)
+    train_val_idx, test_idx = next(sss.split(df, stratum))
+
+    return (df.iloc[train_val_idx].reset_index(drop=True),
+            df.iloc[test_idx].reset_index(drop=True))
+
+
+def make_age_sigma(df: pd.DataFrame) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Compute log10(Myr)-space age sigmas for multi-sample age perturbation.
+
+    Returns (log_age_myr, sigma_lo, sigma_hi, has_age_err) as float32 tensors.
+    Stars without age_err get sigma=0 (point age, no perturbation — effectively
+    10 identical samples that average to the same as a single sample).
+    """
+    age_myr  = df['age_gyr'].values * 1000
+    has_err  = (df['age_err_lo_gyr'].notna() & df['age_err_hi_gyr'].notna()).values
+
+    err_lo_myr = np.where(has_err, df['age_err_lo_gyr'].fillna(0).values * 1000, 0.0)
+    err_hi_myr = np.where(has_err, df['age_err_hi_gyr'].fillna(0).values * 1000, 0.0)
+
+    age_lo = np.maximum(age_myr - err_lo_myr, 1.0)
+    sig_lo = np.where(has_err, np.log10(age_myr) - np.log10(age_lo),              0.0)
+    sig_hi = np.where(has_err, np.log10(age_myr + err_hi_myr) - np.log10(age_myr), 0.0)
+
+    return (
+        torch.tensor(df['log_age_myr'].values.astype(np.float32)),
+        torch.tensor(sig_lo.astype(np.float32)),
+        torch.tensor(sig_hi.astype(np.float32)),
+        torch.tensor(has_err.astype(np.float32)),  # float32 for DataLoader compatibility
+    )
 
 
 def make_folds(df: pd.DataFrame,

@@ -5,20 +5,26 @@ from sklearn.preprocessing import StandardScaler
 import zuko
 
 from .constants import LOGA_GRID
-from .plots import (plot_loss, plot_residuals, plot_precision_grid,
-                    plot_accuracy_grid, plot_posteriors, plot_prot_space,
-                    plot_residual_panels, plot_cluster_residual_densities)
+from .plots import (plot_precision_grid, plot_accuracy_grid, plot_posteriors,
+                    plot_prot_space, plot_residual_panels,
+                    plot_cluster_residual_densities)
 
 
-def training_report(loss_curves: list[list[float]]) -> None:
-    """All 5 fold loss curves overlaid on one figure."""
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for i, lc in enumerate(loss_curves):
-        ax.plot(lc, lw=1, alpha=0.7, label=f'Fold {i}')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Loss')
-    ax.set_title('Training Loss — All Folds')
-    ax.legend()
+def training_report(train_curves: list[list[float]],
+                    val_curves:   list[list[float]]) -> None:
+    """Train and val loss curves for all folds, one value per epoch."""
+    _, axes = plt.subplots(1, 2, figsize=(14, 4))
+
+    for i, (tc, vc) in enumerate(zip(train_curves, val_curves)):
+        axes[0].plot(tc, lw=1, alpha=0.7, label=f'Fold {i}')
+        axes[1].plot(vc, lw=1, alpha=0.7, label=f'Fold {i}')
+
+    for ax, title in zip(axes, ['Training Loss', 'Validation Loss']):
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title(title)
+        ax.legend()
+
     plt.tight_layout()
     plt.show()
 
@@ -66,6 +72,8 @@ def coverage_report(results_df: pd.DataFrame,
     else:
         print('Interpretation      : close to nominal 68% calibration.')
 
+    if 'fold' not in df_valid.columns:
+        return None
     return (
         df_valid
         .assign(inside_68=inside_68.to_numpy())

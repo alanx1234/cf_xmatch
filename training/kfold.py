@@ -1,77 +1,96 @@
 import numpy as np
 import pandas as pd
-from typing import Callable
+import torch
 from sklearn.preprocessing import StandardScaler
-import zuko
 
-from .flow import create_flow
-from .data import make_folds, make_tensors, make_age_weights, sample_log_age
-from .train import train_fold
-from .infer import batch_posteriors
+from .flow    import create_flow
+from .data    import make_folds, make_tensors, make_age_sigma
+from .train   import train_fold, compute_test_ll
+from .infer   import batch_posteriors
 from .metrics import compute_residuals
-from .constants import LOGA_GRID, PRIOR_LOGPROT
+from .constants import PRIOR_LOGPROT
 
 
-def run_kfold(df:            pd.DataFrame,
-              obs_col:       str,
-              cond_cols:     list[str],
-              n_folds:       int             = 5,
-              steps:         int             = 5000,
-              age_weights:   bool            = False,
-              age_sample_fn: Callable | None = None,
-              age_col:       str | None      = None,
-              err_lo_col:    str | None      = None,
-              err_hi_col:    str | None      = None,
-              prior_bounds:  tuple           = PRIOR_LOGPROT,
-              ) -> tuple[pd.DataFrame, list[zuko.flows.NSF],
-                         list[StandardScaler], list[list[float]], np.ndarray]:
-    """Orchestrates k-fold: split → train → infer → collect residuals.
+def run_kfold(
+    df:              pd.DataFrame,
+    test_df:         pd.DataFrame,
+    obs_col:         str,
+    cond_cols:       list[str],
+    n_folds:         int        = 5,
+    total_steps:     int        = 5000,
+    batch_size:      int        = 256,
+    n_samples:       int        = 10,
+    use_onecycle:    bool       = False,
+    hidden_features: tuple[int] = (64, 64),
+    prior_bounds:    tuple      = PRIOR_LOGPROT,
+) -> tuple[pd.DataFrame, list, list[StandardScaler],
+           list[list[float]], list[list[float]], list[float], np.ndarray]:
+    """Orchestrates k-fold: split → train → infer → collect residuals + test LL.
 
-    age_weights=True  : activates 1B inverse-uncertainty loss weighting.
-    age_sample_fn     : pass sample_log_age for 1C stochastic age sampling.
-    age_col/err_*_col : required when age_sample_fn is provided.
+    df       : 90% train/val pool (already split from full dataset).
+    test_df  : fixed 10% holdout, never seen during training.
 
-    Returns (results_df, fold_flows, fold_scalers, loss_curves, posteriors).
-    posteriors is shape (N, len(LOGA_GRID)), each star evaluated on its held-out fold.
+    Returns
+    -------
+    results_df       : val-fold residuals for all stars in df
+    fold_flows       : trained flow per fold
+    fold_scalers     : fitted StandardScaler per fold
+    train_curves     : per-epoch train loss per fold
+    val_curves       : per-epoch val loss per fold
+    test_lls         : avg log likelihood on test_df per fold
+    posteriors_all   : shape (N, len(LOGA_GRID)), held-out posteriors
     """
     n_cond = len(cond_cols)
     folds  = make_folds(df, n_folds=n_folds)
 
-    all_results     = []
-    all_posteriors  = []
-    fold_flows      = []
-    fold_scalers    = []
-    loss_curves     = []
+
+    all_results    = []
+    all_posteriors = []
+    fold_flows     = []
+    fold_scalers   = []
+    train_curves   = []
+    val_curves     = []
+    test_lls       = []
 
     for fold_i, (train_df, val_df) in enumerate(folds):
         print(f'\n=== Fold {fold_i + 1} / {n_folds} ===')
 
-        # Fit scaler on unperturbed train_df so normalization reference is stable.
-        # For 1C, age resampling happens inside train_fold each step using this scaler.
+        # Scaler fitted on unperturbed train_df — age sampling uses raw log_age later
         x_train, c_train, scaler = make_tensors(train_df, obs_col, cond_cols)
-        x_val,   c_val,   _      = make_tensors(val_df,     obs_col, cond_cols, scaler)
+        x_val,   c_val,   _      = make_tensors(val_df,   obs_col, cond_cols, scaler)
+        x_test,  c_test,  _      = make_tensors(test_df,  obs_col, cond_cols, scaler)
 
-        w_age = make_age_weights(train_df) if age_weights else None
+        log_age_tr,  sigma_lo_tr,  sigma_hi_tr,  has_err_tr  = make_age_sigma(train_df)
+        log_age_val, sigma_lo_val, sigma_hi_val, has_err_val = make_age_sigma(val_df)
 
-        flow = create_flow(n_cond=n_cond)
-        lc   = train_fold(
-            flow          = flow,
-            x             = x_train,
-            c             = c_train,
-            obs_col       = obs_col,
-            steps         = steps,
-            age_weights   = w_age,
-            age_sample_fn = age_sample_fn,
-            age_df        = train_df if age_sample_fn else None,
-            age_col       = age_col,
-            err_lo_col    = err_lo_col,
-            err_hi_col    = err_hi_col,
-            cond_cols     = cond_cols,
-            scaler        = scaler,
-            prior_bounds  = prior_bounds,
+        torch.manual_seed(42 + fold_i)
+        flow = create_flow(n_cond=n_cond, hidden_features=hidden_features)
+
+        tr_curve, vl_curve = train_fold(
+            flow         = flow,
+            x_train      = x_train,
+            c_train      = c_train,
+            log_age_tr   = log_age_tr,
+            sigma_lo_tr  = sigma_lo_tr,
+            sigma_hi_tr  = sigma_hi_tr,
+            has_err_tr   = has_err_tr,
+            x_val        = x_val,
+            c_val        = c_val,
+            log_age_val  = log_age_val,
+            sigma_lo_val = sigma_lo_val,
+            sigma_hi_val = sigma_hi_val,
+            has_err_val  = has_err_val,
+            scaler       = scaler,
+            total_steps  = total_steps,
+            batch_size   = batch_size,
+            n_samples    = n_samples,
+            use_onecycle = use_onecycle,
+            prior_bounds = prior_bounds,
         )
 
-        # Infer on val fold using this fold's model
+        test_ll = compute_test_ll(flow, x_test, c_test)
+        print(f'  test avg log-likelihood: {test_ll:.6f}')
+
         posteriors = batch_posteriors(flow, val_df, obs_col, cond_cols, scaler)
         val_result = compute_residuals(val_df, posteriors)
         val_result['fold'] = fold_i
@@ -80,8 +99,15 @@ def run_kfold(df:            pd.DataFrame,
         all_posteriors.append(posteriors)
         fold_flows.append(flow)
         fold_scalers.append(scaler)
-        loss_curves.append(lc)
+        train_curves.append(tr_curve)
+        val_curves.append(vl_curve)
+        test_lls.append(test_ll)
 
-    results_df       = pd.concat(all_results, ignore_index=True)
-    posteriors_all   = np.vstack(all_posteriors)
-    return results_df, fold_flows, fold_scalers, loss_curves, posteriors_all
+    results_df     = pd.concat(all_results, ignore_index=True)
+    posteriors_all = np.vstack(all_posteriors)
+
+    mean_test_ll = float(np.mean(test_lls))
+    print(f'\n=== Mean test avg log-likelihood across folds: {mean_test_ll:.6f} ===')
+
+    return (results_df, fold_flows, fold_scalers,
+            train_curves, val_curves, test_lls, posteriors_all)

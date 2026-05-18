@@ -43,18 +43,24 @@ def age_posterior(flow:        zuko.flows.NSF,
     return probs
 
 
-def batch_posteriors(flow:      zuko.flows.NSF,
-                     df:        object,
-                     obs_col:   str,
-                     cond_cols: list[str],
-                     scaler:    StandardScaler,
-                     loga_grid: np.ndarray = LOGA_GRID
+def batch_posteriors(flow:          zuko.flows.NSF,
+                     df:            object,
+                     obs_col:       str,
+                     cond_cols:     list[str],
+                     scaler:        StandardScaler,
+                     loga_grid:     np.ndarray        = LOGA_GRID,
+                     log_prior_fn=None,
                      ) -> np.ndarray:
     """Vectorized age posteriors for all stars in df.
 
     Builds an (N x len(loga_grid), n_cond) conditioning tensor in one pass
     by tiling each star's fixed conditioning vars across the age grid, then
     replacing the age column with grid values. Normalized per star.
+
+    log_prior_fn: optional callable log_prior_fn(loga_grid) -> (n_grid,) array
+        of log prior values added before normalisation. Default (None) gives a
+        flat prior in log_age. For a flat-in-linear-age prior pass:
+            log_prior_fn = lambda x: x * np.log(10)
 
     Returns array of shape (N, len(loga_grid)).
     """
@@ -79,6 +85,9 @@ def batch_posteriors(flow:      zuko.flows.NSF,
         log_probs = flow(c_t).log_prob(x_t).numpy()       # (N*n_grid,)
 
     log_probs = log_probs.reshape(n_stars, n_grid)
+
+    if log_prior_fn is not None:
+        log_probs += log_prior_fn(loga_grid)[None, :]
 
     # Normalize each star's posterior
     log_probs -= log_probs.max(axis=1, keepdims=True)

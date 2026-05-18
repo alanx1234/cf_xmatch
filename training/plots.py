@@ -45,19 +45,19 @@ def plot_residuals(df: pd.DataFrame, x_col: str) -> None:
 
 
 def plot_precision_grid(df: pd.DataFrame, x_col: str) -> None:
-    """2D heatmap of median p84-p16 precision binned by x_col and inferred age.
+    """2D heatmap of median p84-p16 precision binned by x_col and inferred age (p50).
 
     Equivalent to ChronoFlow figures 15/16.
     """
-    x_bins   = np.linspace(df[x_col].min(), df[x_col].max(), 11)
-    age_bins = np.linspace(df['p50'].min(), df['p50'].max(), 11)
+    x_bins   = np.linspace(df[x_col].min(), df[x_col].max(), 9)
+    age_bins = np.linspace(df['p50'].min(), df['p50'].max(), 9)
 
     grid = np.full((len(age_bins) - 1, len(x_bins) - 1), np.nan)
     for i in range(len(age_bins) - 1):
         for j in range(len(x_bins) - 1):
             mask = (
-                (df['p50']   >= age_bins[i]) & (df['p50']   < age_bins[i + 1]) &
-                (df[x_col]   >= x_bins[j])   & (df[x_col]   < x_bins[j + 1])
+                (df['p50']  >= age_bins[i]) & (df['p50']  < age_bins[i + 1]) &
+                (df[x_col]  >= x_bins[j])   & (df[x_col]  < x_bins[j + 1])
             )
             if mask.sum() >= 3:
                 grid[i, j] = (df.loc[mask, 'p84'] - df.loc[mask, 'p16']).median()
@@ -114,20 +114,20 @@ def plot_posteriors(posteriors: np.ndarray,
 
 
 def plot_accuracy_grid(df: pd.DataFrame, x_col: str) -> None:
-    """2D heatmap of median residual_dex binned by x_col and inferred age.
+    """2D heatmap of median residual_dex binned by x_col and true age (log_age_myr).
 
     Equivalent to ChronoFlow figure 18. Shows where the model is systematically
-    biased — blue = underestimates age, red = overestimates age.
+    biased — blue = overestimates age, red = underestimates age.
     """
-    x_bins   = np.linspace(df[x_col].min(), df[x_col].max(), 11)
-    age_bins = np.linspace(df['p50'].min(), df['p50'].max(), 11)
+    x_bins   = np.linspace(df[x_col].min(), df[x_col].max(), 9)
+    age_bins = np.linspace(df['log_age_myr'].min(), df['log_age_myr'].max(), 9)
 
     grid = np.full((len(age_bins) - 1, len(x_bins) - 1), np.nan)
     for i in range(len(age_bins) - 1):
         for j in range(len(x_bins) - 1):
             mask = (
-                (df['p50']  >= age_bins[i]) & (df['p50']  < age_bins[i + 1]) &
-                (df[x_col]  >= x_bins[j])   & (df[x_col]  < x_bins[j + 1])
+                (df['log_age_myr'] >= age_bins[i]) & (df['log_age_myr'] < age_bins[i + 1]) &
+                (df[x_col]         >= x_bins[j])   & (df[x_col]         < x_bins[j + 1])
             )
             if mask.sum() >= 3:
                 grid[i, j] = df.loc[mask, 'residual_dex'].median()
@@ -139,7 +139,7 @@ def plot_accuracy_grid(df: pd.DataFrame, x_col: str) -> None:
                    cmap='RdBu', vmin=-abs_max, vmax=abs_max)
     plt.colorbar(im, ax=ax, label='Median residual (dex)')
     ax.set_xlabel(x_col)
-    ax.set_ylabel('Inferred log age (Myr)')
+    ax.set_ylabel('True log age (Myr)')
     ax.set_title('Accuracy Grid  (median residual per bin)\n'
                  'blue = model overestimates age   |   red = underestimates   |   white = unbiased',
                  fontsize=9)

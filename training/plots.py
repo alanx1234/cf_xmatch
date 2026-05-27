@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
+from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 import zuko
 
@@ -486,10 +487,10 @@ def plot_praesepe_density(
     cluster_name: str = 'Praesepe',
     res:          int = 80,
 ) -> None:
-    """Section-7-style heatmap for a single cluster, scatter coloured by age residual.
+    """Section-7-style heatmap for a single cluster, scatter colored by age residual.
 
     Shows p(log_prot | tau_cluster, mass) as a 2D imshow (mass on x, log_prot on y),
-    averaged across fold models. Actual cluster stars overlaid as scatter coloured
+    averaged across fold models. Actual cluster stars overlaid as scatter colored
     by age residual (dex).
     """
     mask = results_df.get('cluster_name', pd.Series(dtype=str)) == cluster_name
@@ -532,8 +533,8 @@ def plot_praesepe_density(
                     c=sub['residual_dex'], cmap=res_cmap, norm=res_norm,
                     s=20, zorder=2, edgecolors='none')
     plt.colorbar(sc, ax=ax, label='residual (dex)')
-    ax.set_xlabel(feature_col)
-    ax.set_ylabel('$\\log_{10} P_\\mathrm{rot}$ (d)')
+    ax.set_xlabel(r'Mass ($M_\odot$)')
+    ax.set_ylabel(r'$\log_{10} P_\mathrm{rot}$ (d)')
     ax.set_title(f'{cluster_name}  —  {10**log_age:.0f} Myr  (N={len(sub)})')
     plt.tight_layout()
     plt.show()
@@ -642,13 +643,18 @@ def compute_prot_pdf(
     c_grid = np.tile(c_fixed, (len(logprot_grid), 1))
     x_t    = torch.tensor(logprot_grid.astype(np.float32)).unsqueeze(1)
 
-    log_probs = np.zeros(len(logprot_grid), dtype=np.float64)
+    # Arithmetic-mean ensembling: p_ens = (1/k) Σ p_i, computed via logsumexp
+    # for numerical stability. This is the mixture-of-experts interpretation
+    # and preserves bimodality across folds (vs. log-space averaging, which
+    # is a product-of-experts and artificially sharpens / cancels modes).
+    fold_log_probs = []
     for flow, scaler in zip(flows, scalers):
         flow.eval()
         c_norm = scaler.transform(c_grid).astype(np.float32)
         with torch.no_grad():
-            log_probs += flow(torch.tensor(c_norm)).log_prob(x_t).numpy()
-    log_probs /= len(flows)
+            fold_log_probs.append(flow(torch.tensor(c_norm)).log_prob(x_t).numpy())
+    fold_log_probs = np.stack(fold_log_probs, axis=0)  # (k, n)
+    log_probs      = logsumexp(fold_log_probs, axis=0) - np.log(len(flows))
 
     log_probs -= log_probs.max()
     pdf        = np.exp(log_probs)
@@ -665,13 +671,13 @@ def plot_age_slices(
     cond_cols:   list[str],
     ages_myr:    list[float]  = (30, 100, 300, 700, 2000, 5000),
     mass_grid:   np.ndarray   = None,
-    res:         int          = 60,
+    res:         int          = 80,
     age_tol_dex: float        = 0.10,
 ) -> None:
-    """For each fixed age, plot the model P(P_rot | age, mass) as filled bands.
+    """For each fixed age, plot p(P_rot | age, mass) as a density heatmap.
 
-    Each panel shows median log_prot and 16th/84th percentile bands across the
-    mass grid, with cluster data points for that age overlaid.
+    Each panel: mass (x) vs log_prot (y), bone colormap. Cluster stars within
+    age_tol_dex of the panel age are overlaid in deeppink.
     """
     if mass_grid is None:
         mass_grid = np.linspace(float(df['mass_msun'].min()),
@@ -679,8 +685,14 @@ def plot_age_slices(
 
     age_col_idx  = cond_cols.index('log_age_myr')
     mass_col_idx = cond_cols.index('mass_msun')
-    logprot_fine = np.linspace(PRIOR_LOGPROT[0], PRIOR_LOGPROT[1], 300)
+    prot_grid    = np.linspace(df['log_prot'].min() - 0.1,
+                               df['log_prot'].max() + 0.1, res)
+    PP, MM       = np.meshgrid(prot_grid, mass_grid, indexing='ij')
+    x_grid       = torch.tensor(PP.ravel().astype(np.float32)).unsqueeze(1)
     c_median     = df[cond_cols].median().values.astype(np.float32)
+
+    err_lo = float(df['mass_msun_err_lo'].median()) if 'mass_msun_err_lo' in cond_cols else 0.0
+    err_hi = float(df['mass_msun_err_hi'].median()) if 'mass_msun_err_hi' in cond_cols else 0.0
 
     n_ages  = len(ages_myr)
     n_cols  = min(3, n_ages)
@@ -691,55 +703,40 @@ def plot_age_slices(
 
     for ax, age_myr in zip(axes, ages_myr):
         log_age = np.log10(age_myr)
-        p16_arr, p50_arr, p84_arr = [], [], []
 
-        for mass in mass_grid:
-            c_fixed = c_median.copy()
-            c_fixed[age_col_idx]  = log_age
-            c_fixed[mass_col_idx] = mass
-            if 'mass_msun_err_lo' in cond_cols:
-                c_fixed[cond_cols.index('mass_msun_err_lo')] = float(df['mass_msun_err_lo'].median())
-            if 'mass_msun_err_hi' in cond_cols:
-                c_fixed[cond_cols.index('mass_msun_err_hi')] = float(df['mass_msun_err_hi'].median())
+        c_grid = np.tile(c_median, (res * res, 1))
+        c_grid[:, age_col_idx]  = log_age
+        c_grid[:, mass_col_idx] = MM.ravel()
+        if 'mass_msun_err_lo' in cond_cols:
+            c_grid[:, cond_cols.index('mass_msun_err_lo')] = err_lo
+        if 'mass_msun_err_hi' in cond_cols:
+            c_grid[:, cond_cols.index('mass_msun_err_hi')] = err_hi
 
-            c_grid    = np.tile(c_fixed, (len(logprot_fine), 1))
-            x_t       = torch.tensor(logprot_fine.astype(np.float32)).unsqueeze(1)
-            log_probs = np.zeros(len(logprot_fine), dtype=np.float64)
-            for flow, scaler in zip(flows, scalers):
-                flow.eval()
-                c_norm = scaler.transform(c_grid).astype(np.float32)
-                with torch.no_grad():
-                    log_probs += flow(torch.tensor(c_norm)).log_prob(x_t).numpy()
-            log_probs -= log_probs.max()
-            pdf  = np.exp(log_probs)
-            cdf  = np.cumsum(pdf)
-            cdf /= cdf[-1]
-            p16_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.16)]))
-            p50_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.50)]))
-            p84_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.84)]))
+        log_probs = np.zeros(res * res, dtype=np.float32)
+        for flow, scaler in zip(flows, scalers):
+            flow.eval()
+            c_norm = scaler.transform(c_grid).astype(np.float32)
+            with torch.no_grad():
+                log_probs += flow(torch.tensor(c_norm)).log_prob(x_grid).numpy()
+        log_probs = (log_probs / len(flows)).reshape(res, res)
 
-        p16_arr = np.array(p16_arr)
-        p50_arr = np.array(p50_arr)
-        p84_arr = np.array(p84_arr)
+        ax.imshow(log_probs, origin='lower', aspect='auto',
+                  extent=[mass_grid[0], mass_grid[-1], prot_grid[0], prot_grid[-1]],
+                  cmap='bone', vmin=-3, vmax=2)
 
-        ax.fill_between(mass_grid, p16_arr, p84_arr, alpha=0.25, color='steelblue')
-        ax.plot(mass_grid, p50_arr, color='steelblue', lw=1.5, label='model median')
-
-        # Overlay cluster data near this age
         nearby = df[(df['log_age_myr'] - log_age).abs() < age_tol_dex]
         if len(nearby):
             ax.scatter(nearby['mass_msun'], nearby['log_prot'],
-                       s=8, color='deeppink', alpha=0.7, zorder=3, label=f'data (N={len(nearby)})')
+                       s=6, color='deeppink', alpha=0.7, zorder=2)
 
-        ax.set_title(_age_label(age_myr), fontsize=9)
+        ax.set_title(f'{_age_label(age_myr)}  (N nearby={len(nearby)})', fontsize=9)
         ax.set_xlabel(r'Mass ($M_\odot$)', fontsize=8)
         ax.set_ylabel(r'$\log_{10} P_\mathrm{rot}$ (d)', fontsize=8)
-        ax.legend(fontsize=6, frameon=False)
 
     for ax in axes[n_ages:]:
         ax.set_visible(False)
 
-    fig.suptitle(r'Coeval population slices: $P_\mathrm{rot}$ distribution vs mass at fixed age')
+    fig.suptitle(r'$p(P_\mathrm{rot}\,|\,\tau,\,m)$ at fixed ages')
     plt.show()
 
 
@@ -750,21 +747,28 @@ def plot_mass_slices(
     cond_cols:   list[str],
     masses:      list[float]  = (0.5, 0.7, 0.9, 1.0, 1.1),
     loga_grid:   np.ndarray   = None,
-    res:         int          = 60,
+    res:         int          = 80,
     mass_tol:    float        = 0.05,
 ) -> None:
-    """For each fixed mass, plot the model P(P_rot | age, mass) spin-down bands.
+    """For each fixed mass, plot p(P_rot | age, mass) as a density heatmap.
 
-    Shows median log_prot and 16th/84th percentile bands vs log_age,
-    with data points for stars within mass_tol overlaid.
+    Each panel: log_age (x) vs log_prot (y), bone colormap. Cluster stars within
+    mass_tol of the panel mass are overlaid in deeppink.
     """
     if loga_grid is None:
         loga_grid = np.linspace(LOGA_GRID[0], LOGA_GRID[-1], res)
 
     age_col_idx  = cond_cols.index('log_age_myr')
     mass_col_idx = cond_cols.index('mass_msun')
-    logprot_fine = np.linspace(PRIOR_LOGPROT[0], PRIOR_LOGPROT[1], 300)
+    prot_grid    = np.linspace(df['log_prot'].min() - 0.1,
+                               df['log_prot'].max() + 0.1, res)
+    loga_g       = np.linspace(loga_grid[0], loga_grid[-1], res)
+    PP, AA       = np.meshgrid(prot_grid, loga_g, indexing='ij')
+    x_grid       = torch.tensor(PP.ravel().astype(np.float32)).unsqueeze(1)
     c_median     = df[cond_cols].median().values.astype(np.float32)
+
+    err_lo = float(df['mass_msun_err_lo'].median()) if 'mass_msun_err_lo' in cond_cols else 0.0
+    err_hi = float(df['mass_msun_err_hi'].median()) if 'mass_msun_err_hi' in cond_cols else 0.0
 
     n_masses = len(masses)
     n_cols   = min(3, n_masses)
@@ -774,54 +778,39 @@ def plot_mass_slices(
     axes = np.array(axes).flatten()
 
     for ax, mass in zip(axes, masses):
-        p16_arr, p50_arr, p84_arr = [], [], []
+        c_grid = np.tile(c_median, (res * res, 1))
+        c_grid[:, age_col_idx]  = AA.ravel()
+        c_grid[:, mass_col_idx] = mass
+        if 'mass_msun_err_lo' in cond_cols:
+            c_grid[:, cond_cols.index('mass_msun_err_lo')] = err_lo
+        if 'mass_msun_err_hi' in cond_cols:
+            c_grid[:, cond_cols.index('mass_msun_err_hi')] = err_hi
 
-        for loga in loga_grid:
-            c_fixed = c_median.copy()
-            c_fixed[age_col_idx]  = loga
-            c_fixed[mass_col_idx] = mass
-            if 'mass_msun_err_lo' in cond_cols:
-                c_fixed[cond_cols.index('mass_msun_err_lo')] = float(df['mass_msun_err_lo'].median())
-            if 'mass_msun_err_hi' in cond_cols:
-                c_fixed[cond_cols.index('mass_msun_err_hi')] = float(df['mass_msun_err_hi'].median())
+        log_probs = np.zeros(res * res, dtype=np.float32)
+        for flow, scaler in zip(flows, scalers):
+            flow.eval()
+            c_norm = scaler.transform(c_grid).astype(np.float32)
+            with torch.no_grad():
+                log_probs += flow(torch.tensor(c_norm)).log_prob(x_grid).numpy()
+        log_probs = (log_probs / len(flows)).reshape(res, res)
 
-            c_grid    = np.tile(c_fixed, (len(logprot_fine), 1))
-            x_t       = torch.tensor(logprot_fine.astype(np.float32)).unsqueeze(1)
-            log_probs = np.zeros(len(logprot_fine), dtype=np.float64)
-            for flow, scaler in zip(flows, scalers):
-                flow.eval()
-                c_norm = scaler.transform(c_grid).astype(np.float32)
-                with torch.no_grad():
-                    log_probs += flow(torch.tensor(c_norm)).log_prob(x_t).numpy()
-            log_probs -= log_probs.max()
-            pdf  = np.exp(log_probs)
-            cdf  = np.cumsum(pdf)
-            cdf /= cdf[-1]
-            p16_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.16)]))
-            p50_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.50)]))
-            p84_arr.append(float(logprot_fine[np.searchsorted(cdf, 0.84)]))
-
-        p16_arr = np.array(p16_arr)
-        p50_arr = np.array(p50_arr)
-        p84_arr = np.array(p84_arr)
-
-        ax.fill_between(loga_grid, p16_arr, p84_arr, alpha=0.25, color='steelblue')
-        ax.plot(loga_grid, p50_arr, color='steelblue', lw=1.5, label='model median')
+        ax.imshow(log_probs, origin='lower', aspect='auto',
+                  extent=[loga_g[0], loga_g[-1], prot_grid[0], prot_grid[-1]],
+                  cmap='bone', vmin=-3, vmax=2)
 
         nearby = df[(df['mass_msun'] - mass).abs() < mass_tol]
         if len(nearby):
             ax.scatter(nearby['log_age_myr'], nearby['log_prot'],
-                       s=8, color='deeppink', alpha=0.7, zorder=3, label=f'data (N={len(nearby)})')
+                       s=6, color='deeppink', alpha=0.7, zorder=2)
 
-        ax.set_title(f'$m = {mass:.2f}\\,M_\\odot$', fontsize=9)
+        ax.set_title(f'$m = {mass:.2f}\\,M_\\odot$  (N nearby={len(nearby)})', fontsize=9)
         ax.set_xlabel(r'$\log_{10}$ Age (Myr)', fontsize=8)
         ax.set_ylabel(r'$\log_{10} P_\mathrm{rot}$ (d)', fontsize=8)
-        ax.legend(fontsize=6, frameon=False)
 
     for ax in axes[n_masses:]:
         ax.set_visible(False)
 
-    fig.suptitle(r'Spin-down tracks: $P_\mathrm{rot}$ distribution vs age at fixed mass')
+    fig.suptitle(r'$p(P_\mathrm{rot}\,|\,\tau,\,m)$ at fixed masses')
     plt.show()
 
 

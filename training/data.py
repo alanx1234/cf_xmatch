@@ -93,6 +93,26 @@ def make_age_sigma(df: pd.DataFrame) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     )
 
 
+def make_mass_sigma(df: pd.DataFrame) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Mass sigmas in linear M_sun units for multi-sample mass perturbation.
+
+    Returns (mass_msun, sigma_lo, sigma_hi, has_mass_err). Stars without
+    mass uncertainty get sigma=0 (10 identical samples = no perturbation).
+    """
+    mass     = df['mass_msun'].values.astype(np.float32)
+    has_err  = (df['mass_msun_err_lo'].notna() & df['mass_msun_err_hi'].notna()).values
+
+    sig_lo = np.where(has_err, df['mass_msun_err_lo'].fillna(0).values, 0.0).astype(np.float32)
+    sig_hi = np.where(has_err, df['mass_msun_err_hi'].fillna(0).values, 0.0).astype(np.float32)
+
+    return (
+        torch.tensor(mass),
+        torch.tensor(sig_lo),
+        torch.tensor(sig_hi),
+        torch.tensor(has_err.astype(np.float32)),
+    )
+
+
 def make_folds(df: pd.DataFrame,
                n_folds: int = 5) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
     """Stratified k-fold on combined age x mass x prot quantile bins (27 strata).

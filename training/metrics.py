@@ -40,3 +40,26 @@ def compute_precision(posteriors: np.ndarray,
     p16 = np.array([np.interp(0.16, cdf[i], loga_grid) for i in range(len(posteriors))])
     p84 = np.array([np.interp(0.84, cdf[i], loga_grid) for i in range(len(posteriors))])
     return p84 - p16
+
+
+def compute_coverage(posteriors:   np.ndarray,
+                     log_age_true: np.ndarray,
+                     levels:       tuple      = (0.68, 0.95),
+                     loga_grid:    np.ndarray = LOGA_GRID,
+                     ) -> dict[float, float]:
+    """Empirical coverage at each central credible level.
+
+    For level L, returns the fraction of stars whose true log_age_myr falls
+    inside the central L credible interval [p_lo, p_hi] of their posterior,
+    where lo = (1 - L) / 2 and hi = 1 - (1 - L) / 2. Well-calibrated → ≈ L.
+    """
+    cdf = np.cumsum(posteriors * np.gradient(loga_grid), axis=1)
+    cdf /= cdf[:, -1:]
+
+    out: dict[float, float] = {}
+    for L in levels:
+        lo_q, hi_q = (1 - L) / 2, 1 - (1 - L) / 2
+        p_lo = np.array([np.interp(lo_q, cdf[i], loga_grid) for i in range(len(posteriors))])
+        p_hi = np.array([np.interp(hi_q, cdf[i], loga_grid) for i in range(len(posteriors))])
+        out[L] = float(((log_age_true >= p_lo) & (log_age_true <= p_hi)).mean())
+    return out

@@ -4,7 +4,7 @@ import torch
 from sklearn.preprocessing import StandardScaler
 
 from .flow    import create_flow
-from .data    import make_folds, make_tensors, make_age_sigma
+from .data    import make_folds, make_tensors, make_age_sigma, make_mass_sigma
 from .train   import train_fold, compute_test_ll
 from .infer   import batch_posteriors
 from .metrics import compute_residuals
@@ -24,6 +24,9 @@ def run_kfold(
     use_onecycle:    bool       = False,
     hidden_features: tuple[int] = (64, 64),
     prior_bounds:    tuple      = PRIOR_LOGPROT,
+    sample_mass:     bool       = False,
+    mass_col_idx:    int        = 1,
+    loss_agg:        str        = 'mean',
 ) -> tuple[pd.DataFrame, list, list[StandardScaler],
            list[list[float]], list[list[float]], list[float], np.ndarray]:
     """Orchestrates k-fold: split → train → infer → collect residuals + test LL.
@@ -64,6 +67,23 @@ def run_kfold(
         log_age_tr,  sigma_lo_tr,  sigma_hi_tr,  has_err_tr  = make_age_sigma(train_df)
         log_age_val, sigma_lo_val, sigma_hi_val, has_err_val = make_age_sigma(val_df)
 
+        mass_kwargs = {}
+        if sample_mass:
+            mass_tr,  mass_sig_lo_tr,  mass_sig_hi_tr,  mass_has_err_tr  = make_mass_sigma(train_df)
+            mass_val, mass_sig_lo_val, mass_sig_hi_val, mass_has_err_val = make_mass_sigma(val_df)
+            mass_kwargs = dict(
+                sample_mass      = True,
+                mass_tr          = mass_tr,
+                mass_sig_lo_tr   = mass_sig_lo_tr,
+                mass_sig_hi_tr   = mass_sig_hi_tr,
+                mass_has_err_tr  = mass_has_err_tr,
+                mass_val         = mass_val,
+                mass_sig_lo_val  = mass_sig_lo_val,
+                mass_sig_hi_val  = mass_sig_hi_val,
+                mass_has_err_val = mass_has_err_val,
+                mass_col_idx     = mass_col_idx,
+            )
+
         torch.manual_seed(42 + fold_i)
         flow = create_flow(n_cond=n_cond, hidden_features=hidden_features)
 
@@ -88,6 +108,8 @@ def run_kfold(
             n_samples    = n_samples,
             use_onecycle = use_onecycle,
             prior_bounds = prior_bounds,
+            loss_agg     = loss_agg,
+            **mass_kwargs,
         )
 
         test_ll = compute_test_ll(flow, x_test, c_test)

@@ -1,2 +1,6 @@
 cf_data/elbadry*
 Mann_2019/
+.conda-env/
+.venv/
+dustmaps_data/
+wip_data/feinstein_*.csv
